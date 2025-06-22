@@ -1,18 +1,13 @@
 import requests
 import pandas as pd
-import numpy as np
 import ta
-import os
-from datetime import datetime
 
-BYBIT_API_KEY = os.getenv("BYBIT_API_KEY")
-BYBIT_API_SECRET = os.getenv("BYBIT_API_SECRET")
+# --- НАСТРОЙКИ ---
+API_KEY = "r7wZmhKJ2orE1dVqZM"
+API_SECRET = "n0QB6JyDSc9K6icWJSOLszKU2EGWThkfkKVG"
+BASE_URL = "https://api.bybit.com"
+HEADERS = {"X-BYBIT-API-KEY": API_KEY}
 
-HEADERS = {
-    "X-BYBIT-API-KEY": BYBIT_API_KEY
-}
-
-# Таймфреймы
 TIMEFRAMES = {
     "5m": "5",
     "15m": "15",
@@ -23,57 +18,49 @@ TIMEFRAMES = {
     "1d": "D"
 }
 
-# Запрос свечей с Bybit
-def fetch_ohlcv(symbol: str, interval: str, limit: int = 200):
-    url = "https://api.bybit.com/v5/market/kline"
+LIMIT = 200  # максимум, доступный по API
+
+def fetch_ohlcv(symbol: str, interval: str):
+    url = f"{BASE_URL}/v5/market/kline"
     params = {
         "category": "spot",
-        "symbol": symbol,
+        "symbol": symbol.upper(),
         "interval": interval,
-        "limit": limit
+        "limit": LIMIT
     }
-    response = requests.get(url, params=params, headers=HEADERS)
+    response = requests.get(url, params=params)
+    response.raise_for_status()
     data = response.json()
     
-    if "result" not in data or "list" not in data["result"]:
-        raise ValueError("Invalid response from Bybit")
+    if data["retCode"] != 0:
+        raise ValueError(f"API Error: {data['retMsg']}")
 
-    ohlcv = pd.DataFrame(data["result"]["list"])
-    ohlcv.columns = ["timestamp", "open", "high", "low", "close", "volume", "_"]
-    ohlcv = ohlcv[["timestamp", "open", "high", "low", "close", "volume"]].astype(float)
-    ohlcv["timestamp"] = pd.to_datetime(ohlcv["timestamp"], unit="ms")
-    ohlcv = ohlcv.sort_values("timestamp").reset_index(drop=True)
-    
-    return ohlcv
+    df = pd.DataFrame(data["result"]["list"])
+    df.columns = [
+        "timestamp", "open", "high", "low", "close", "volume", "turnover"
+    ]
+    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+    df[["open", "high", "low", "close", "volume"]] = df[["open", "high", "low", "close", "volume"]].astype(float)
+    df = df.sort_values("timestamp").reset_index(drop=True)
+    return df
 
-# Вычисление индикаторов
-def compute_indicators(df):
-    close = df["close"]
-    volume = df["volume"]
-
-    ema_50 = ta.trend.EMAIndicator(close, window=50).ema_indicator().iloc[-1]
-    ema_200 = ta.trend.EMAIndicator(close, window=200).ema_indicator().iloc[-1]
-    rsi = ta.momentum.RSIIndicator(close, window=14).rsi().iloc[-1]
-
-    stoch = ta.momentum.StochRSIIndicator(close, window=14, smooth1=3, smooth2=3)
-    stoch_k = stoch.stochrsi_k().iloc[-1]
-    stoch_d = stoch.stochrsi_d().iloc[-1]
-
-    return {
-        "close": round(close.iloc[-1], 10),
-        "ema_50": round(ema_50, 10),
-        "ema_200": round(ema_200, 10),
-        "rsi": round(rsi, 2),
-        "stoch_rsi_k": round(stoch_k, 2),
-        "stoch_rsi_d": round(stoch_d, 2),
-        "volume": round(volume.iloc[-1], 2),
-    }
-
-# Анализ по всем таймфреймам
-def compute_indicators_for_all_timeframes(symbol: str):
+def calculate_indicators(df: pd.DataFrame):
     result = {}
-    for name, interval in TIMEFRAMES.items():
-        df = fetch_ohlcv(symbol, interval)
-        indicators = compute_indicators(df)
-        result[name] = indicators
+    result["close"] = df["close"].iloc[-1]
+    result["volume"] = df["volume"].iloc[-1]
+    result["ema_50"] = ta.trend.ema_indicator(df["close"], window=50).iloc[-1]
+    result["ema_200"] = ta.trend.ema_indicator(df["close"], window=200).iloc[-1]
+    result["rsi"] = ta.momentum.rsi(df["close"], window=14).iloc[-1]
+    
+    stoch_rsi = ta.momentum.stochrsi(df["close"], window=14, smooth1=3, smooth2=3)
+    result["stoch_rsi"] = stoch_rsi.iloc[-1]
+    
     return result
+
+def compute_indicators_for_all_timeframes(symbol: str):
+    all_data = {}
+    for label, interval in TIMEFRAMES.items():
+        df = fetch_ohlcv(symbol, interval)
+        indicators = calculate_indicators(df)
+        all_data[label] = indicators
+    return all_data
